@@ -1,0 +1,112 @@
+name: "docker creation"
+
+on:
+  workflow_dispatch:
+    inputs:
+      display-version:
+        description: 'Selfsovereign Browser version'
+        type: string
+        required: true
+        default: '0.0.1'
+      inside-version:
+        description: 'Tor Browser version'
+        type: string
+        required: true
+        default: '14.0-1'
+      browser-build:
+        description: 'whether to build browser'
+        type: boolean
+        default: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        name: Clone 🧬
+        with:
+          token: ${{ secrets.PAT }}
+          submodules: 'recursive'
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v1
+      - name: Cache Docker layers
+        uses: actions/cache@v2
+        with:
+          path: /tmp/.buildx-cache
+          key: ${{ runner.os }}-buildx-${{ github.sha }}
+          restore-keys: |
+            ${{ runner.os }}-buildx-
+
+      - name: Change PPA mirror servers
+        run: |
+          sudo perl -p -i -e 's%(deb(?:-src|)\s+)https?://(?!archive\.canonical\.com|security\.ubuntu\.com)[^\s]+%$1http://archive.ubuntu.com/ubuntu/%' /etc/apt/sources.list
+          sudo apt-get update
+      - name: Setup Disk & Swap Space 💿
+        run: |
+          chmod +x .github/workflows/disk_swap_for_github_runner.sh
+          .github/workflows/disk_swap_for_github_runner.sh
+
+      # tor-build
+      - name: dependecies
+        run: |
+          sudo apt-get install libdata-dump-perl libdata-uuid-perl libdatetime-perl \
+                    libdigest-sha-perl libfile-copy-recursive-perl \
+                    libfile-slurp-perl libio-all-perl libcapture-tiny-perl \
+                    libio-handle-util-perl libjson-perl \
+                    libparallel-forkmanager-perl libpath-tiny-perl \
+                    libsort-versions-perl libstring-shellquote-perl \
+                    libtemplate-perl libxml-libxml-perl libxml-writer-perl \
+                    libyaml-libyaml-perl git uidmap zstd
+      - name: make linux
+        if: ${{ inputs.browser-build }}
+        run: |
+          make torbrowser-release-linux-x86_64 args='--output-dir=output/linux-x86_64 --target noversiondir'
+      # - name: make mac
+      #   if: ${{ inputs.browser-build }}
+      #   run: |
+      #     make torbrowser-release-macos args='--output-dir=output/macos --target noversiondir'
+      # - name: make windows
+      #   if: ${{ inputs.browser-build }}
+      #   run: |
+      #     make torbrowser-release-windows-x86_64 args='--output-dir=output/windows-x86_64 --target noversiondir'
+
+      # docker image
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v1
+        with:
+          username: ${{ vars.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+      - name: Build and push Docker image to Docker Hub
+        uses: docker/build-push-action@v2
+        with:
+          file: ./.github/Dockerfile
+          push: true
+          tags: teatwo/tor-browser-build:${{ inputs.inside-version }}
+          labels: |
+            org.opencontainers.image.source=${{ github.event.repository.clone_url }}
+          cache-from: type=local,src=/tmp/.buildx-cache
+          cache-to: type=local,dest=/tmp/.buildx-cache-new
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v1
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.PAT }}
+      - name: Build and push Docker image to GitHub Container Registry
+        uses: docker/build-push-action@v2
+        with:
+          file: ./.github/Dockerfile
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/tor-browser-build:${{ inputs.inside-version }}
+          labels: |
+            org.opencontainers.image.source=${{ github.event.repository.clone_url }}
+          cache-from: type=local,src=/tmp/.buildx-cache
+          cache-to: type=local,dest=/tmp/.buildx-cache-new
+
+      - name: Move cache
+        run: |
+          rm -rf /tmp/.buildx-cache
+          mv /tmp/.buildx-cache-new /tmp/.buildx-cache

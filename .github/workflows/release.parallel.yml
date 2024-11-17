@@ -1,0 +1,122 @@
+# This Source Code Form is subject to the terms of the Mozilla Public
+# License, v. 2.0. If a copy of the MPL was not distributed with this
+# file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+# Please write our copyright if you use this file.
+# © 2023 Floorp Projects & Contributors
+
+name: "release - parallel"
+
+on:
+  workflow_dispatch:
+    inputs:
+      display-version:
+        description: 'Selfsovereign Browser version'
+        type: string
+        required: true
+        default: '0.0.1mvp'
+      inside-version:
+        description: 'Tor Browser version'
+        type: string
+        required: true
+        default: '14.0-1tor'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      max-parallel: 3
+      matrix:
+        platform: [linux-x86_64, macos, windows-x86_64]
+    steps:
+      - uses: actions/checkout@v4
+        name: Clone 🧬
+        with:
+          token: ${{ secrets.PAT }}
+          submodules: 'recursive'
+      - name: Change PPA mirror servers
+        run: |
+          sudo perl -p -i -e 's%(deb(?:-src|)\s+)https?://(?!archive\.canonical\.com|security\.ubuntu\.com)[^\s]+%$1http://archive.ubuntu.com/ubuntu/%' /etc/apt-get/sources.list
+          sudo apt-get update
+      - name: Setup Disk & Swap Space 💿
+        run: |
+          chmod +x .github/workflows/disk_swap_for_github_runner.sh
+          .github/workflows/disk_swap_for_github_runner.sh
+
+      # tor-build
+      - name: dependecies
+        run: |
+          sudo apt-get install libdata-dump-perl libdata-uuid-perl libdatetime-perl \
+                    libdigest-sha-perl libfile-copy-recursive-perl \
+                    libfile-slurp-perl libio-all-perl libcapture-tiny-perl \
+                    libio-handle-util-perl libjson-perl \
+                    libparallel-forkmanager-perl libpath-tiny-perl \
+                    libsort-versions-perl libstring-shellquote-perl \
+                    libtemplate-perl libxml-libxml-perl libxml-writer-perl \
+                    libyaml-libyaml-perl git uidmap zstd
+      - name: make
+        run: |
+          make torbrowser-release-${{ matrix.platform }} args='--output-dir=output/${{ matrix.platform }} --target noversiondir'
+
+      - name: Package 2 - zip 📦
+        run: |
+          mkdir ~/output
+          cp output/${{ matrix.platform }}/*.tar.gz ~/output/ssb-${{ inputs.display-version }}-${{ inputs.inside-version }}.${{ matrix.platform }}.tar.gz
+      - name: Publish🎁
+        uses: actions/upload-artifact@v4
+        with:
+          name: artifacts
+          path: ~/output
+
+  Deploy-to-installer:
+    needs: [build]
+    runs-on: ubuntu-latest
+    steps:
+    - name: Release version 📦
+      run: |
+        echo "Release version: ${{ inputs.display-version }}-${{ inputs.inside-version }}"
+
+    - name: make directory 📁
+      run: |
+        mkdir -p ~/downloads
+
+    - name: download build artifact 📥
+      uses: actions/download-artifact@v4
+      with:
+        name: artifacts
+        path: ~/downloads
+
+    - name: check file structure 🗃
+      run: |
+        cd ~/downloads
+        echo "current directory: $PWD"
+        echo "****************************************************************************************************"
+        find . -print | sed -e "s;[^/]*/;|____;g;s;____|; |;g"
+        echo "****************************************************************************************************"
+
+    - name: Create hashes.txt file 📝
+      run: |
+        cd /home/runner/downloads
+        touch hashes.txt
+        echo "SHA256 hashes" > hashes.txt
+        echo "****************************************************************************************************" >> hashes.txt
+        echo "Linux" >> hashes.txt
+        sha256sum ssb-${{ inputs.display-version }}-${{ inputs.inside-version }}.linux-x86_64.tar.gz  >> hashes.txt
+        echo "****************************************************************************************************" >> hashes.txt
+
+    - name: Deploy to GitHub Releases for Stable Version 🚀
+      id: create_release
+      uses: softprops/action-gh-release@v2
+      with:
+        files: |
+          /home/runner/downloads/ssb-*.linux-x86_64.tar.gz
+          /home/runner/downloads/ssb-*.windows-x86_64.tar.gz
+          /home/runner/downloads/ssb-*.macos.tar.gz
+          /home/runner/downloads/hashes.txt
+        tag_name: "v${{ inputs.display-version }}-${{ inputs.inside-version }}"
+        name: "v${{ inputs.display-version }}-${{ inputs.inside-version }}"
+        draft: true
+        prerelease: true
+        token: ${{ secrets.PAT }}
+      env:
+        GITHUB_REPOSITORY: ${{ github.repository }}

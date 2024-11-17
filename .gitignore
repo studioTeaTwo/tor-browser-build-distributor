@@ -6,7 +6,7 @@
 /basebrowser
 /mullvadbrowser
 /testbuild
-/rbm.local.conf
+# /rbm.local.conf
 /logs
 /tmp
 
